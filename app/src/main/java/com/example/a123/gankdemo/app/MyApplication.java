@@ -2,11 +2,15 @@ package com.example.a123.gankdemo.app;
 
 import android.app.Application;
 import android.content.Context;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
+import android.content.pm.PackageManager.NameNotFoundException;
 import android.os.Handler;
 import android.support.multidex.MultiDex;
 import android.support.v4.BuildConfig;
 
 import com.example.a123.gankdemo.utils.ACache;
+import com.example.a123.gankdemo.utils.NetUtils;
 import com.maning.librarycrashmonitor.MCrashMonitor;
 import com.readystatesoftware.chuck.ChuckInterceptor;
 import com.socks.library.KLog;
@@ -14,11 +18,16 @@ import com.umeng.analytics.MobclickAgent;
 import com.umeng.commonsdk.UMConfigure;
 
 import java.io.File;
+import java.io.IOException;
 import java.util.concurrent.TimeUnit;
 
 import okhttp3.Cache;
+import okhttp3.CacheControl;
+import okhttp3.Interceptor;
 import okhttp3.OkHttpClient;
 import okhttp3.OkHttpClient.Builder;
+import okhttp3.Request;
+import okhttp3.Response;
 
 
 /**
@@ -125,8 +134,62 @@ public class MyApplication extends Application {
         client.cache(cache);
         //设置拦截器
         client.addInterceptor(new ChuckInterceptor(myApplication));
-
+        client.addNetworkInterceptor(REWRITE_CACHE_CONTROL_INTERCEPTOR);
+        client.addInterceptor(REWRITE_CACHE_CONTROL_INTERCEPTOR);
         return  client.build();
+    }
+
+    private static final Interceptor REWRITE_CACHE_CONTROL_INTERCEPTOR = new Interceptor() {
+        @Override
+        public Response intercept(Chain chain) throws IOException {
+            //方案二：无网读缓存，有网根据过期时间重新请求
+            Request request = chain.request();
+            boolean netWorkConection = NetUtils.hasNetWorkConection(MyApplication.getMyApplication());
+            if (!netWorkConection) {
+                request = request.newBuilder()
+                        .cacheControl(CacheControl.FORCE_CACHE)
+                        .build();
+            }
+
+            Response response = chain.proceed(request);
+            if (netWorkConection) {
+                //有网的时候读接口上的@Headers里的配置，你可以在这里进行统一的设置
+                String cacheControl = request.cacheControl().toString();
+                response.newBuilder()
+                        .removeHeader("Pragma")// 清除头信息，因为服务器如果不支持，会返回一些干扰信息，不清除下面无法生效
+                        .header("Cache-Control", cacheControl)
+                        .build();
+            } else {
+                int maxStale = 60 * 60 * 24 * 7;
+                response.newBuilder()
+                        .removeHeader("Pragma")
+                        .header("Cache-Control", "public, only-if-cached, max-stale=" + maxStale)
+                        .build();
+            }
+            return response;
+        }
+    };
+
+
+    //版本名
+    public static String getVersionName() {
+        return getPackageInfo().versionName;
+    }
+
+    //版本号
+    public static int getVersionCode() {
+        return getPackageInfo().versionCode;
+    }
+
+    private static PackageInfo getPackageInfo(){
+        PackageInfo packageInfo = null;
+        try {
+            PackageManager packageManager = myApplication.getPackageManager();
+            packageInfo = packageManager.getPackageInfo(myApplication.getPackageName(),PackageManager.GET_CONFIGURATIONS);
+        } catch (NameNotFoundException e) {
+            e.printStackTrace();
+        }
+        return packageInfo;
     }
 
 }
